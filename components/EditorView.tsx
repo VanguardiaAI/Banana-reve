@@ -209,8 +209,31 @@ export const EditorView: React.FC<EditorViewProps> = ({ image, onDone, isDevMode
     try {
       setImgSize({ width: img.naturalWidth, height: img.naturalHeight });
       calculateLayout();
-      const base64Data = imageToAnalyze.imageUrl.split(',')[1];
-      const mimeType = imageToAnalyze.imageUrl.match(/data:(.*);/)?.[1] || 'image/png';
+      
+      // Convert image to base64 if it's an HTTP URL
+      let base64Data: string;
+      let mimeType: string;
+      
+      if (imageToAnalyze.imageUrl.startsWith('http')) {
+        // Fetch the image and convert to base64
+        const response = await fetch(imageToAnalyze.imageUrl);
+        const blob = await response.blob();
+        mimeType = blob.type || 'image/png';
+        
+        const reader = new FileReader();
+        const base64Promise = new Promise<string>((resolve) => {
+          reader.onloadend = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1]);
+          };
+        });
+        reader.readAsDataURL(blob);
+        base64Data = await base64Promise;
+      } else {
+        // It's already a data URL
+        base64Data = imageToAnalyze.imageUrl.split(',')[1];
+        mimeType = imageToAnalyze.imageUrl.match(/data:(.*);/)?.[1] || 'image/png';
+      }
       
       const apiObjects = await segmentObjectsInImage(base64Data, mimeType);
       const objectTree = await processApiObjects(apiObjects, img);
@@ -307,8 +330,30 @@ export const EditorView: React.FC<EditorViewProps> = ({ image, onDone, isDevMode
         try {
             const boxToUse = modifiedBoxes[selectedObject.id] || selectedObject.box;
             const maskBase64 = createMaskFromBox(boxToUse, imgSize.width, imgSize.height);
-            const base64Data = currentImage.imageUrl.split(',')[1];
-            const mimeType = currentImage.imageUrl.match(/data:(.*);/)?.[1] || 'image/png';
+            
+            // Convert image to base64 if it's an HTTP URL
+            let base64Data: string;
+            let mimeType: string;
+            
+            if (currentImage.imageUrl.startsWith('http')) {
+                const response = await fetch(currentImage.imageUrl);
+                const blob = await response.blob();
+                mimeType = blob.type || 'image/png';
+                
+                const reader = new FileReader();
+                const base64Promise = new Promise<string>((resolve) => {
+                    reader.onloadend = () => {
+                        const result = reader.result as string;
+                        resolve(result.split(',')[1]);
+                    };
+                });
+                reader.readAsDataURL(blob);
+                base64Data = await base64Promise;
+            } else {
+                base64Data = currentImage.imageUrl.split(',')[1];
+                mimeType = currentImage.imageUrl.match(/data:(.*);/)?.[1] || 'image/png';
+            }
+            
             const newImageBase64Array = await editImageWithMask(base64Data, mimeType, prompt, maskBase64);
             
             const newVariations = newImageBase64Array.map((b64, i) => ({
@@ -328,28 +373,29 @@ export const EditorView: React.FC<EditorViewProps> = ({ image, onDone, isDevMode
             setGenerationStatus('idle');
         }
     };
-    if (isDevMode && selectedObject) {
-        const boxToUse = modifiedBoxes[selectedObject.id] || selectedObject.box;
-        const maskBase64 = createMaskFromBox(boxToUse, imgSize.width, imgSize.height);
-        const maskUrl = `data:image/png;base64,${maskBase64}`;
-        setDevModalState({
-            isOpen: true,
-            onConfirm: () => {
-                setDevModalState({ isOpen: false, data: null, onConfirm: () => {} });
-                execute();
-            },
-            data: {
-                title: t('devModeEditorTitle'),
-                prompt: `You are a professional photo editor. Your task is to edit an image based on a user's request, but you MUST ONLY modify the white masked area. The rest of the image (the black area) must remain completely unchanged. Do not alter the original image's style, lighting, or composition. The user's request is: "${prompt}". Apply this change seamlessly and realistically to the masked region.`,
-                images: [
-                    { title: t('devModeOriginalImage'), url: currentImage.imageUrl },
-                    { title: t('devModeMaskImage'), url: maskUrl },
-                ],
-            },
-        });
-    } else {
-        execute();
-    }
+
+    // ALWAYS show dev modal for debugging
+    const boxToUse = modifiedBoxes[selectedObject.id] || selectedObject.box;
+    const maskBase64 = createMaskFromBox(boxToUse, imgSize.width, imgSize.height);
+    const maskUrl = `data:image/png;base64,${maskBase64}`;
+    setDevModalState({
+        isOpen: true,
+        onConfirm: () => {
+            setDevModalState({ isOpen: false, data: null, onConfirm: () => {} });
+            execute();
+        },
+        data: {
+            title: 'Debug: Edit with Mask',
+            prompt: `User Request: "${prompt}"
+
+Full Prompt Sent to AI:
+You are a professional photo editor. Your task is to edit an image based on a user's request, but you MUST ONLY modify the white masked area. The rest of the image (the black area) must remain completely unchanged. Do not alter the original image's style, lighting, or composition. The user's request is: "${prompt}". Apply this change seamlessly and realistically to the masked region.`,
+            images: [
+                { title: 'Original Image', url: currentImage.imageUrl },
+                { title: 'Mask (white = edit area)', url: maskUrl },
+            ],
+        },
+    });
   };
 
   const handleReposition = async () => {
@@ -394,23 +440,35 @@ export const EditorView: React.FC<EditorViewProps> = ({ image, onDone, isDevMode
         }));
         const generatedPrompt = await generateRepositionPrompt(visualInstructionImageBase64, movedObjectData);
 
-        if (isDevMode) {
-            const instructionImageUrl = `data:image/png;base64,${visualInstructionImageBase64}`;
-            setDevModalState({
-                isOpen: true,
-                onConfirm: () => {
-                    setDevModalState({ isOpen: false, data: null, onConfirm: () => {} });
-                    executeFinalStep(generatedPrompt, visualInstructionImageBase64);
-                },
-                data: {
-                    title: t('devModeEditorTitle'),
-                    prompt: `You are a professional VFX compositor... COMMAND: "${generatedPrompt}"`,
-                    images: [{ title: t('devModeInstructionImage'), url: instructionImageUrl }],
-                },
-            });
-        } else {
-            executeFinalStep(generatedPrompt, visualInstructionImageBase64);
-        }
+        // ALWAYS show dev modal for debugging
+        const instructionImageUrl = `data:image/png;base64,${visualInstructionImageBase64}`;
+        setDevModalState({
+            isOpen: true,
+            onConfirm: () => {
+                setDevModalState({ isOpen: false, data: null, onConfirm: () => {} });
+                executeFinalStep(generatedPrompt, visualInstructionImageBase64);
+            },
+            data: {
+                title: 'Debug: Reposition with Visual Instructions',
+                prompt: `Generated Command: "${generatedPrompt}"
+
+Full Prompt Sent to AI:
+You are a professional VFX compositor. You have been given a single 'visual instruction' image that uses red arrows to indicate object movements, along with a text command.
+
+    **CRITICAL INSTRUCTIONS:**
+    1.  **EXECUTE THE COMMAND:** You must perform the edit described in the command below.
+    2.  **USE THE VISUAL GUIDE:** The red arrows in the image are your primary guide for the exact movement paths.
+    3.  **FLAWLESS INPAINTING:** The areas where the objects were originally located must be perfectly reconstructed (inpainted), leaving absolutely no trace, ghosting, or artifacts. This is the most important step.
+    4.  **PRESERVE THE ORIGINAL:** Do NOT change the style, lighting, color grading, or any other aspect of the original image not covered by the edit.
+    5.  **CLEAN FINAL OUTPUT:** The final image you return MUST be a clean, photorealistic image. It MUST NOT contain the red arrows or any other visual artifacts.
+    
+    **COMMAND:**
+    "${generatedPrompt}"`,
+                images: [
+                    { title: 'Visual Instructions (with arrows)', url: instructionImageUrl }
+                ],
+            },
+        });
     } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to generate reposition prompt.');
         setGenerationStatus('idle');
@@ -493,7 +551,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ image, onDone, isDevMode
     <div className="flex flex-col h-screen bg-[#0D0D0D] text-white">
       <header className="flex items-center p-4 border-b border-white/10 flex-shrink-0 h-[65px]">
         <button onClick={() => onDone()} className="flex items-center gap-2 text-gray-300 hover:text-white">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
           <span className="font-semibold">{t('backToAlbum')}</span>
         </button>
       </header>

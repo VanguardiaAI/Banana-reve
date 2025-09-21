@@ -13,7 +13,7 @@ interface PromptData {
 interface DevModeConfirmationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: (updatedPrompt: string) => void;
   promptData: PromptData;
 }
 
@@ -24,6 +24,7 @@ export const DevModeConfirmationModal: React.FC<DevModeConfirmationModalProps> =
   promptData,
 }) => {
   const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [editedPrompt, setEditedPrompt] = useState(promptData.prompt);
 
   useEffect(() => {
     if (isOpen && promptData.imageFiles.length > 0) {
@@ -32,6 +33,10 @@ export const DevModeConfirmationModal: React.FC<DevModeConfirmationModalProps> =
       return () => urls.forEach(url => URL.revokeObjectURL(url));
     }
   }, [isOpen, promptData.imageFiles]);
+
+  useEffect(() => {
+    setEditedPrompt(promptData.prompt);
+  }, [promptData.prompt]);
 
   if (!isOpen) return null;
 
@@ -50,7 +55,13 @@ export const DevModeConfirmationModal: React.FC<DevModeConfirmationModalProps> =
         <main className="flex-1 p-6 overflow-y-auto space-y-6">
           <div>
             <label className="block text-sm font-medium text-gray-400 mb-2">{t('devModePromptLabel')}</label>
-            <pre className="bg-[#131314] text-gray-200 p-3 rounded-lg text-sm whitespace-pre-wrap font-mono">{promptData.prompt}</pre>
+            <textarea
+              value={editedPrompt}
+              onChange={(e) => setEditedPrompt(e.target.value)}
+              className="w-full bg-[#131314] text-gray-200 p-3 rounded-lg text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+              rows={6}
+              placeholder="Enter your prompt here..."
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -79,7 +90,7 @@ export const DevModeConfirmationModal: React.FC<DevModeConfirmationModalProps> =
           <button onClick={onClose} className="bg-[#2C2C2E] hover:bg-gray-700 text-white font-semibold px-5 py-2 rounded-lg">
             {t('devModeCancel')}
           </button>
-          <button onClick={onConfirm} className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-5 py-2 rounded-lg">
+          <button onClick={() => onConfirm(editedPrompt)} className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-5 py-2 rounded-lg">
             {t('devModeConfirm')}
           </button>
         </footer>

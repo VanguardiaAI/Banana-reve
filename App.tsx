@@ -5,6 +5,7 @@ import { AlbumView } from './components/AlbumView';
 import { EditorView } from './components/EditorView';
 import { Sidebar } from './components/Sidebar';
 import type { Album, ImageVariation } from './types';
+import { apiService } from './services/apiService';
 
 const App: React.FC = () => {
   const [view, setView] = useState<'dashboard' | 'album' | 'editor'>('dashboard');
@@ -13,33 +14,66 @@ const App: React.FC = () => {
   const [imageToEdit, setImageToEdit] = useState<ImageVariation | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDevMode, setIsDevMode] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   const activeAlbum = albums.find(a => a.id === activeAlbumId);
 
-  const handleCreateNewAlbum = useCallback((switchToNew = true) => {
-    const newAlbum: Album = {
-      id: Date.now().toString(),
-      title: `Album ${albums.length + 1}`,
-      chatHistory: [],
-      galleryImages: [],
-      createdAt: new Date(),
-    };
-    setAlbums(prev => [...prev, newAlbum]);
-    if (switchToNew) {
-      setActiveAlbumId(newAlbum.id);
-      setView('album');
+  const handleCreateNewAlbum = useCallback(async (switchToNew = true) => {
+    try {
+      const newAlbum = await apiService.createAlbum(`Album ${albums.length + 1}`);
+      setAlbums(prev => [...prev, newAlbum]);
+      if (switchToNew) {
+        setActiveAlbumId(newAlbum.id);
+        setView('album');
+      }
+      return newAlbum;
+    } catch (error) {
+      console.error('Failed to create album:', error);
+      // Fallback to local creation
+      const newAlbum: Album = {
+        id: Date.now().toString(),
+        title: `Album ${albums.length + 1}`,
+        chatHistory: [],
+        galleryImages: [],
+        createdAt: new Date(),
+      };
+      setAlbums(prev => [...prev, newAlbum]);
+      if (switchToNew) {
+        setActiveAlbumId(newAlbum.id);
+        setView('album');
+      }
+      return newAlbum;
     }
-    return newAlbum;
   }, [albums.length]);
 
   // Effect to handle initial app load
   useEffect(() => {
-    // This runs only once on initial mount
-    if (albums.length === 0) {
-      const initialAlbum = handleCreateNewAlbum(false); // Create but don't switch view yet
-      setActiveAlbumId(initialAlbum.id);
-      setView('album');
-    }
+    const loadAlbums = async () => {
+      try {
+        const loadedAlbums = await apiService.getAlbums();
+        setAlbums(loadedAlbums);
+        
+        if (loadedAlbums.length === 0) {
+          const initialAlbum = await handleCreateNewAlbum(false);
+          setActiveAlbumId(initialAlbum.id);
+          setView('dashboard');
+        } else {
+          // Set the first album as active but stay on dashboard
+          setActiveAlbumId(loadedAlbums[0].id);
+          setView('dashboard');
+        }
+      } catch (error) {
+        console.error('Failed to load albums:', error);
+        // Fallback to creating a local album
+        const initialAlbum = await handleCreateNewAlbum(false);
+        setActiveAlbumId(initialAlbum.id);
+        setView('dashboard');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadAlbums();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array ensures this runs only once
 
@@ -48,8 +82,15 @@ const App: React.FC = () => {
     setView('album');
   };
 
-  const updateAlbum = (updatedAlbum: Album) => {
-    setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
+  const updateAlbum = async (updatedAlbum: Album) => {
+    try {
+      await apiService.updateAlbum(updatedAlbum.id, updatedAlbum);
+      setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
+    } catch (error) {
+      console.error('Failed to update album:', error);
+      // Still update locally even if server fails
+      setAlbums(prev => prev.map(a => a.id === updatedAlbum.id ? updatedAlbum : a));
+    }
   };
   
   const handleGoToEditor = (image: ImageVariation) => {
@@ -109,7 +150,36 @@ const App: React.FC = () => {
     setView('dashboard');
   }
 
+  const handleDeleteAlbum = async (albumId: string) => {
+    try {
+      await apiService.deleteAlbum(albumId);
+      setAlbums(prev => prev.filter(a => a.id !== albumId));
+      
+      // If we're deleting the active album, select another or go to dashboard
+      if (activeAlbumId === albumId) {
+        const remainingAlbums = albums.filter(a => a.id !== albumId);
+        if (remainingAlbums.length > 0) {
+          setActiveAlbumId(remainingAlbums[0].id);
+        } else {
+          setActiveAlbumId(null);
+        }
+        setView('dashboard');
+      }
+    } catch (error) {
+      console.error('Failed to delete album:', error);
+      alert('Error al eliminar el álbum');
+    }
+  };
+
   const renderView = () => {
+    if (isLoading) {
+      return (
+        <div className="flex items-center justify-center h-screen">
+          <div className="text-2xl text-gray-400">Loading albums...</div>
+        </div>
+      );
+    }
+    
     switch (view) {
       case 'editor':
         if (!imageToEdit) {
@@ -127,7 +197,7 @@ const App: React.FC = () => {
         return <AlbumView album={activeAlbum} onUpdateAlbum={updateAlbum} onEditImage={handleGoToEditor} isDevMode={isDevMode} />;
       case 'dashboard':
       default:
-        return <DashboardView albums={albums} onSelectAlbum={handleSelectAlbum} onNewAlbum={() => handleCreateNewAlbum(true)} />;
+        return <DashboardView albums={albums} onSelectAlbum={handleSelectAlbum} onNewAlbum={() => handleCreateNewAlbum(true)} onDeleteAlbum={handleDeleteAlbum} />;
     }
   };
 

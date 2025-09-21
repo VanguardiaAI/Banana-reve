@@ -38,6 +38,7 @@ export interface ChatMessage {
   originalRequest?: { // For retrying failed requests
     prompt: string;
     imageFiles: File[]; // Changed from imageFile: File
+    imagesData?: { base64Data: string, mimeType: string }[]; // Store base64 data for retry
     sourceImageUrl?: string;
     useWebSearch: boolean;
   };

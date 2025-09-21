@@ -75,7 +75,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handleSend = () => {
-    if ((prompt.trim() && imageFiles.length > 0) && onSend) {
+    if (prompt.trim() && onSend) {
       onSend(prompt.trim(), imageFiles, useWebSearch);
       setPrompt('');
       setImageFiles([]);
@@ -149,7 +149,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             xmlns="http://www.w3.org/2000/svg"
             width="24"
             height="24"
-            viewBox="0 0 24"
+            viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
@@ -162,14 +162,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         </button>
         <button
           onClick={handleSend}
-          disabled={!prompt.trim() || imageFiles.length === 0 || isDisabled}
+          disabled={!prompt.trim() || isDisabled}
           className="p-2 rounded-full bg-gray-700 text-white disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
             width="24"
             height="24"
-            viewBox="0 0 24"
+            viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
             strokeWidth="2"

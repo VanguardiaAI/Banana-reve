@@ -10,6 +10,7 @@ import { dataUrlToFile } from '../utils/imageUtils';
 import { t } from '../i18n';
 import { generateImageEdits, retryImageGeneration } from '../services/geminiService';
 import { DevModeConfirmationModal } from './DevModeConfirmationModal';
+import { apiService } from '../services/apiService';
 
 interface AlbumViewProps {
   album: Album;
@@ -91,16 +92,27 @@ export const AlbumView: React.FC<AlbumViewProps> = ({ album, onUpdateAlbum, onEd
     async (prompt: string, imageFiles: File[], useWebSearch: boolean, sourceImageUrl?: string) => {
         const userMessageId = Date.now().toString();
         const assistantLoadingId = (Date.now() + 1).toString();
-        const imageUrls = imageFiles.map(file => URL.createObjectURL(file));
-        const primaryImageUrl = sourceImageUrl || imageUrls[0];
         
         try {
-            const imagesData = await readFilesAsBase64(imageFiles);
+            // Upload user images to server and get URLs (if any)
+            let imageUrls: string[] = [];
+            let primaryImageUrl: string | undefined = sourceImageUrl;
+            let imagesData: { base64Data: string, mimeType: string }[] = [];
+            
+            if (imageFiles.length > 0) {
+                const uploadPromises = imageFiles.map(file => 
+                    apiService.uploadImage(file, file.name, 'User uploaded image', album.id)
+                );
+                const uploadedImages = await Promise.all(uploadPromises);
+                imageUrls = uploadedImages.map(img => img.imageUrl);
+                primaryImageUrl = sourceImageUrl || imageUrls[0];
+                imagesData = await readFilesAsBase64(imageFiles);
+            }
 
-            // Add user message to chat
+            // Add user message to chat with server URLs
             const updatedChatWithUser: ChatMessageType[] = [
                 ...album.chatHistory,
-                { id: userMessageId, role: 'user', text: prompt, imageUrls: imageUrls },
+                { id: userMessageId, role: 'user', text: prompt, imageUrls: imageUrls.length > 0 ? imageUrls : undefined },
             ];
             onUpdateAlbum({ ...album, chatHistory: updatedChatWithUser });
 
@@ -127,7 +139,7 @@ export const AlbumView: React.FC<AlbumViewProps> = ({ album, onUpdateAlbum, onEd
             onUpdateAlbum(currentAlbumState);
 
             try {
-                const generator = generateImageEdits(imagesData, prompt, useWebSearch);
+                const generator = generateImageEdits(imagesData, prompt, useWebSearch, album.id);
                 let planData: any = null;
                 let groundingData: any = null;
                 const finalVariations: ImageVariation[] = [];
@@ -187,15 +199,16 @@ export const AlbumView: React.FC<AlbumViewProps> = ({ album, onUpdateAlbum, onEd
                         role: 'assistant', 
                         text: error instanceof Error ? error.message : t('genericError'), 
                         isError: true,
-                        originalRequest: { prompt, imageFiles, sourceImageUrl, useWebSearch }
+                        originalRequest: { prompt, imageFiles, imagesData, sourceImageUrl, useWebSearch }
                     },
                 ];
                 // Remove placeholders from gallery on error
                 const galleryWithoutPlaceholders = currentAlbumState.galleryImages.filter(img => !img.isLoading);
                 onUpdateAlbum({ ...album, chatHistory: finalChatHistory, galleryImages: galleryWithoutPlaceholders });
             }
-        } finally {
-            imageUrls.forEach(url => URL.revokeObjectURL(url));
+        } catch (error) {
+            console.error('Error in executeSendPrompt:', error);
+            throw error;
         }
     },
     [album, onUpdateAlbum]
@@ -203,7 +216,7 @@ export const AlbumView: React.FC<AlbumViewProps> = ({ album, onUpdateAlbum, onEd
   
   const handleSendPrompt = useCallback(
     (prompt: string, imageFiles: File[], useWebSearch: boolean, sourceImageUrl?: string) => {
-      if (!prompt || imageFiles.length === 0) return;
+      if (!prompt) return;
 
       if (isDevMode) {
         setDevModalState({ isOpen: true, data: { prompt, imageFiles, useWebSearch, sourceImageUrl } });
@@ -224,12 +237,28 @@ export const AlbumView: React.FC<AlbumViewProps> = ({ album, onUpdateAlbum, onEd
     }
   };
 
-  const handleRetry = (failedMessage: ChatMessageType) => {
+  const handleRetry = async (failedMessage: ChatMessageType) => {
     if (!failedMessage.originalRequest) return;
     const historyWithoutError = album.chatHistory.filter(m => m.id !== failedMessage.id);
     onUpdateAlbum({ ...album, chatHistory: historyWithoutError });
-    const { prompt, imageFiles, sourceImageUrl, useWebSearch } = failedMessage.originalRequest;
-    handleSendPrompt(prompt, imageFiles, useWebSearch, sourceImageUrl);
+    const { prompt, imageFiles, imagesData, sourceImageUrl, useWebSearch } = failedMessage.originalRequest;
+    
+    // If we have imageFiles, use them; otherwise convert imagesData back to Files
+    let files = imageFiles;
+    if (!files || files.length === 0) {
+      if (imagesData && imagesData.length > 0) {
+        files = await Promise.all(imagesData.map(async (data, index) => {
+          const response = await fetch(`data:${data.mimeType};base64,${data.base64Data}`);
+          const blob = await response.blob();
+          return new File([blob], `image-${index}.${data.mimeType.split('/')[1]}`, { type: data.mimeType });
+        }));
+      } else {
+        console.error('No image data available for retry');
+        return;
+      }
+    }
+    
+    handleSendPrompt(prompt, files, useWebSearch, sourceImageUrl);
   };
   
   const handleRetryVariation = async (failedVariation: ImageVariation) => {
@@ -345,10 +374,10 @@ export const AlbumView: React.FC<AlbumViewProps> = ({ album, onUpdateAlbum, onEd
         <DevModeConfirmationModal
             isOpen={devModalState.isOpen}
             onClose={() => setDevModalState({ isOpen: false, data: null })}
-            onConfirm={() => {
+            onConfirm={(updatedPrompt) => {
                 if (devModalState.data) {
-                    const { prompt, imageFiles, useWebSearch, sourceImageUrl } = devModalState.data;
-                    executeSendPrompt(prompt, imageFiles, useWebSearch, sourceImageUrl);
+                    const { imageFiles, useWebSearch, sourceImageUrl } = devModalState.data;
+                    executeSendPrompt(updatedPrompt, imageFiles, useWebSearch, sourceImageUrl);
                 }
                 setDevModalState({ isOpen: false, data: null });
             }}

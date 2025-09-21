@@ -1,8 +1,8 @@
 
-
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ImageVariation, ApiObject, BoundingBox } from "../types";
 import { getCurrentLanguage } from "../i18n";
+import { apiService } from "./apiService";
 
 let ai: GoogleGenAI | null = null;
 
@@ -69,13 +69,13 @@ const editImageInternal = async (
     if (!prompt || typeof prompt !== 'string' || prompt.trim() === '') {
       throw new Error("A valid, non-empty prompt is required for image editing.");
     }
-    if (!images || images.length === 0) {
-        throw new Error("At least one image is required for editing.");
-    }
+    // Allow text-only generation when no images are provided
       
     const client = getAiClient();
 
-    const imageParts = images.map(img => ({ inlineData: { data: img.base64Data, mimeType: img.mimeType } }));
+    const imageParts = images && images.length > 0 
+      ? images.map(img => ({ inlineData: { data: img.base64Data, mimeType: img.mimeType } }))
+      : [];
 
     const parts: any[] = [
       ...imageParts,
@@ -197,7 +197,8 @@ type GeneratorYield =
 export async function* generateImageEdits(
   images: { base64Data: string, mimeType: string }[],
   userPrompt: string,
-  useWebSearch: boolean = false
+  useWebSearch: boolean = false,
+  albumId?: string
 ): AsyncGenerator<GeneratorYield> {
   
   const client = getAiClient();
@@ -205,7 +206,9 @@ export async function* generateImageEdits(
 
   let planPrompt: string;
   const config: any = {}; 
-  const imageParts = images.map(img => ({ inlineData: { data: img.base64Data, mimeType: img.mimeType } }));
+  const imageParts = images && images.length > 0 
+    ? images.map(img => ({ inlineData: { data: img.base64Data, mimeType: img.mimeType } }))
+    : [];
   const contents: any = { parts: [...imageParts] };
 
   if (useWebSearch) {
@@ -216,10 +219,10 @@ export async function* generateImageEdits(
     
     config.tools = [{ googleSearch: {} }];
     
-    planPrompt = `You are a creative AI assistant. A user has provided ${images.length} image(s) and a prompt in "${lang}": "${userPrompt}".
+    planPrompt = `You are a creative AI assistant. A user has provided ${images.length > 0 ? `${images.length} image(s) and` : ''} a prompt in "${lang}": "${userPrompt}".
 
         Your task is to create a superior generation plan using multilingual web search.
-        1.  Analyze ALL provided images' content, style, and composition.
+        1.  ${images.length > 0 ? 'Analyze ALL provided images\' content, style, and composition.' : 'Create a generation plan based purely on the user\'s text prompt.'}
         2.  Take the user's prompt and perform Google searches for advanced "nano banana" (a generative AI model) techniques. Search in MULTIPLE LANGUAGES, including English, Japanese, and Korean, to find diverse ideas.
         3.  Synthesize your findings from the multilingual search and the original request to create a generation plan.
         4.  Write a brief, encouraging, conversational response to the user. YOU MUST RESPOND IN THE USER'S LANGUAGE (${lang}).
@@ -227,16 +230,26 @@ export async function* generateImageEdits(
         6.  The 'modifiedPrompt' field MUST be a non-empty, highly detailed string written in ENGLISH for the image model.
         7.  Generate 4 actionable follow-up prompts in the user's language.
         
-        EXTREMELY IMPORTANT: Your entire response must be a single, valid JSON object. It MUST start with '{' and end with '}'. Do NOT include any text, greetings, or markdown formatting like \`\`\`json before or after the JSON object.`;
+        EXTREMELY IMPORTANT: Your entire response must be a single, valid JSON object following this structure:
+        {
+          "textResponse": "string",
+          "variations": [
+            {"title": "string", "description": "string", "modifiedPrompt": "string"},
+            {"title": "string", "description": "string", "modifiedPrompt": "string"},
+            {"title": "string", "description": "string", "modifiedPrompt": "string"}
+          ],
+          "followUpSuggestions": ["string", "string", "string", "string"]
+        }
+        Do NOT include any text, explanations, or markdown formatting before or after the JSON object.`;
     
     contents.parts.push({ text: planPrompt });
 
   } else {
      config.responseMimeType = 'application/json';
      config.responseSchema = generationPlanSchema;
-     planPrompt = `You are a world-class creative director and prompt engineer acting as a planner. A user wants to edit/combine ${images.length} image(s) with the prompt: "${userPrompt}". The user's language is "${lang}".
+     planPrompt = `You are a world-class creative director and prompt engineer acting as a planner. A user wants to ${images.length > 0 ? `edit/combine ${images.length} image(s) with` : 'generate images from'} the prompt: "${userPrompt}". The user's language is "${lang}".
         
-        Your task is to analyze ALL provided images and conceptualize 3 distinct, high-quality artistic variations.
+        Your task is to ${images.length > 0 ? 'analyze ALL provided images and' : ''} conceptualize 3 distinct, high-quality artistic variations.
         1.  Write a brief, encouraging, conversational response in the USER'S LANGUAGE (${lang}).
         2.  For each variation, create a short title and a one-sentence description, also in the USER'S LANGUAGE.
         3.  For each variation's 'modifiedPrompt' (which must be in ENGLISH), write a descriptive, multi-sentence paragraph. Do NOT use simple keywords. Instead, describe a complete photorealistic scene. Incorporate professional photographic terms like camera angles (e.g., "low-angle shot", "close-up"), lens types (e.g., "85mm portrait lens", "wide-angle"), and lighting conditions (e.g., "golden hour light", "softbox setup", "cinematic lighting").
@@ -253,9 +266,8 @@ export async function* generateImageEdits(
     config: config
   });
   
-  // Use the robust JSON extraction method.
-  const planJsonText = extractJson(planResponse.text);
-  const plan = JSON.parse(planJsonText);
+  // When using responseSchema, the response is already valid JSON
+  const plan = config.responseSchema ? JSON.parse(planResponse.text) : JSON.parse(extractJson(planResponse.text));
   
   const groundingMetadata = planResponse.candidates?.[0]?.groundingMetadata;
 
@@ -276,12 +288,23 @@ export async function* generateImageEdits(
         : `${userPrompt}, in the style of: ${variation.title}`;
 
       const editedImageBase64 = await editImageInternal(images, promptForGeneration);
+      
+      // Save image to server and get URL
+      // Use a default mimeType if no source images provided
+      const mimeType = images.length > 0 ? images[0].mimeType : 'image/png';
+      const savedImage = await apiService.saveBase64Image(
+        `data:${mimeType};base64,${editedImageBase64}`,
+        variation.title,
+        variation.description,
+        albumId
+      );
+      
       const newVariation: ImageVariation = {
-        id: Date.now().toString() + Math.random(),
-        title: variation.title,
-        description: variation.description,
-        imageUrl: `data:${images[0].mimeType};base64,${editedImageBase64}`,
-        createdAt: new Date(),
+        id: savedImage.id,
+        title: savedImage.title,
+        description: savedImage.description,
+        imageUrl: savedImage.imageUrl,
+        createdAt: savedImage.createdAt,
       };
       yield newVariation; // Yield each image as it's generated
     } catch (error) {
@@ -469,7 +492,7 @@ export const segmentObjectsInImage = async (
         contents: {
             parts: [
                 { inlineData: { data: imageBase64, mimeType: mimeType } },
-                { text: "Analyze the image and detect all distinct objects, both large and small. Your task is to organize these objects into a hierarchical scene graph, like layers in an image editor. For each object, you must provide: a unique 'id', a descriptive 'label', its 'parentId' (which is the 'id' of the containing object, or null for top-level objects), and its normalized 2D 'box_2d'. Do NOT include segmentation masks. Strive for a deep and logical hierarchy. For example, a 'Person' object might be a parent to 'Face', 'Hat', and 'Hand' objects. A 'Desk' might be a parent to 'Laptop' and 'Coffee Mug'." }
+                { text: "Analyze the image and detect objects with focus on these categories: 1) Clothing items (shirts, pants, dresses, jackets, etc.) 2) Fashion accessories (bags, jewelry, watches, sunglasses, belts, scarves) 3) Footwear 4) Products and branded items 5) Text or logos 6) Main subjects (people, animals) as whole entities. For each object provide: a unique 'id', a descriptive 'label', its 'parentId' (the 'id' of the containing object, or null for top-level), and its normalized 2D 'box_2d'. IMPORTANT: Do NOT segment body parts like eyes, nose, mouth, ears, hands. Keep people/animals as single entities. Focus on items that can be edited, replaced, or styled. Create a simple hierarchy - for example, a 'Person' might parent their 'T-shirt' and 'Backpack', but do not break down facial features." }
             ]
         },
         config: {
